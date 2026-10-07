@@ -1,0 +1,22 @@
+[package]
+name = "lime-discord-bot"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "=1.0.100"
+dotenvy = "=0.15.7"
+hickory-resolver = "=0.24.4"
+ipnet = "=2.11.0"
+poise = { version = "=0.6.2", default-features = false }
+reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls", "stream"] }
+serenity = { version = "=0.12.5", default-features = false, features = ["client", "gateway", "model", "utils", "rustls_backend"] }
+tokio = { version = "=1.48.0", features = ["macros", "rt-multi-thread", "time", "net", "sync", "io-util", "process"] }
+
+[profile.release]
+strip = true
+opt-level = "z"
