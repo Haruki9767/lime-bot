@@ -6,18 +6,20 @@ use std::{
 };
 
 use anyhow::{Context as _, bail};
+use hickory_resolver::TokioAsyncResolver;
 use poise::serenity_prelude::{GatewayIntents, GuildId};
 
 mod cogs;
 
 const MAX_COOLDOWN_ENTRIES: usize = 4_096;
-const COOLDOWN_ENTRY_TTL: Duration = Duration::from_secs(10);
+const COOLDOWN_ENTRY_TTL: Duration = Duration::from_secs(60);
 
 pub type Error = anyhow::Error;
 
 /// Shared bot state. The small cooldown map is bounded and never stores network clients.
 pub struct Data {
     pub start_time: Instant,
+    pub resolver: TokioAsyncResolver,
     cooldowns: Mutex<HashMap<(u64, &'static str), Instant>>,
 }
 
@@ -100,6 +102,9 @@ async fn main() -> anyhow::Result<()> {
         })
         .setup(move |ctx, _ready, framework| {
             Box::pin(async move {
+                let resolver = TokioAsyncResolver::tokio_from_system_conf()
+                    .context("could not initialize the system DNS resolver")?;
+
                 if let Some(guild_id) = development_guild {
                     poise::builtins::register_in_guild(
                         ctx,
@@ -113,6 +118,7 @@ async fn main() -> anyhow::Result<()> {
 
                 Ok(Data {
                     start_time: Instant::now(),
+                    resolver,
                     cooldowns: Mutex::new(HashMap::new()),
                 })
             })
@@ -138,8 +144,28 @@ mod tests {
     fn data() -> Data {
         Data {
             start_time: Instant::now(),
+            resolver: TokioAsyncResolver::tokio_from_system_conf()
+                .expect("system DNS resolver is available in tests"),
             cooldowns: Mutex::new(HashMap::new()),
         }
+    }
+
+    #[test]
+    fn registration_composes_all_requested_slash_commands() {
+        let names: Vec<String> = cogs::commands()
+            .iter()
+            .map(|command| command.name.to_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "curl".to_owned(),
+                "ping".to_owned(),
+                "whois".to_owned(),
+                "dns".to_owned(),
+                "uptime".to_owned(),
+            ]
+        );
     }
 
     #[test]

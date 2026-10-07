@@ -1,47 +1,74 @@
 # Lime Discord Bot
 
-A Rust 2024 Discord bot built with Tokio, Serenity, and Poise. It currently exposes two slash commands: `/curl` and `/ping`.
+Lime is a modular Rust 2024 Discord bot using Tokio, Serenity 0.12, and Poise 0.6. It supports **slash commands only**—there are no text-prefix handlers and no Message Content intent requirement.
 
-## Requirements
+## Requirements and configuration
 
-- Rust **1.85 or newer** (the project uses edition 2024)
-- A Discord application and bot token
-- For Wispbyte, a Linux server/container compatible with the uploaded executable
+- Rust **1.85 or newer** (edition 2024)
+- A Discord application with a bot user and token
+- For Wispbyte, a Linux container compatible with the generated executable and the outbound network requirements below
 
-## Configure the Discord application
+### Discord application setup
 
 1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications) and add a bot user.
-2. Invite it to your server with the `bot` and `applications.commands` OAuth scopes. Grant the bot permission to send messages in channels where you will run its commands.
-3. No privileged Gateway intents or Message Content intent are needed; this project uses slash commands only.
-4. Copy `.env.example` to `.env` for local development and set `DISCORD_TOKEN` to the bot token. Keep the real token secret and never commit `.env`.
-5. Optionally set `DISCORD_GUILD_ID` to a test server's numeric ID for fast guild-scoped command registration. Leave it unset for global registration; global command changes may take time to propagate.
+2. Invite it using the `bot` and `applications.commands` OAuth scopes. Grant the bot permission to send messages where users will run commands.
+3. Do not enable privileged Gateway intents; this bot uses application commands only.
+4. For local work, copy `.env.example` to `.env` and set `DISCORD_TOKEN`. Never commit a real token or put it in source code.
+5. Optionally set `DISCORD_GUILD_ID` to a development server’s numeric ID for fast guild-scoped registration. Omit it for global deployment; global command changes may take time to propagate.
 
-## Run locally
+## Run and verify locally
 
 ```sh
 cp .env.example .env
-# Edit .env and set DISCORD_TOKEN (and optionally DISCORD_GUILD_ID).
+# Edit .env and set DISCORD_TOKEN; optionally set DISCORD_GUILD_ID.
 cargo run --locked
 ```
 
-Run checks before deploying:
+Run the project checks and build a release binary with:
 
 ```sh
 cargo fmt --all -- --check
+cargo check --locked
 cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 cargo build --release --locked
 ```
 
-The bot needs outbound connectivity to Discord's Gateway/API. `/curl` also needs DNS and outbound HTTP(S); `/ping` attempts ICMP on Linux when the `ping` executable is available and otherwise falls back to a bounded TCP connection. Hosting-provider firewall rules can restrict these features.
+The bot’s memory, network operations, request/response bodies, DNS result count, and Discord output are bounded for small containers. It uses `rustls`, not native TLS, and does not rely on system `curl`, `whois`, or `dig` binaries. The optional Linux `ping` executable is the only external command it attempts.
+
+## Slash commands
+
+- **`/curl url:<URL>`** — performs a bounded HTTP **GET**. It accepts only HTTP/HTTPS, rejects credentials and non-public IPv4/IPv6 destinations (including mixed public/private DNS answers), pins the validated DNS results to prevent rebinding, disables redirects, limits request time and body size, and escapes/truncates the result safely for Discord.
+- **`/ping host:<host> [port:<port>]`** — accepts only public Internet destinations. It resolves hostnames once, rejects the full answer set if any address is non-public, and probes a checked IP. On Linux it attempts ICMP with a process timeout if the `ping` executable can be started; if the executable is missing or cannot be launched, it uses a bounded TCP connectivity check to the supplied port (default `443`). TCP fallback is labeled as TCP, not ICMP. Use only for destinations you are authorized to test; cooldowns are applied per user.
+- **`/whois domain:<domain>`** — validates a public domain, queries IANA then follows at most one validated registry referral over TCP port 43, and extracts registrar, creation date, expiry date, and nameservers best-effort. Missing fields are reported as `not provided`; registry output varies. A host or network that blocks outbound TCP/43 can prevent results.
+- **`/dns domain:<domain> [type:<type>]`** — queries A, AAAA, MX, TXT, NS, or CNAME records using the configured system resolver; type defaults to A. Query time, result count, and Discord output are bounded. No records and resolver failures receive clear responses.
+- **`/uptime`** — reports process uptime. The Poise command context does not expose the shard runner’s heartbeat measurement, so gateway latency is explicitly reported as unavailable rather than invented.
+
+Network commands defer their Discord response before slow I/O, so DNS, TCP, or HTTP waits do not miss Discord’s initial interaction-response deadline ([Discord interaction response docs](https://discord.com/developers/docs/interactions/receiving-and-responding)).
+
+### How `/curl` can gain more options
+
+Today `/curl` takes one URL and always performs a GET. It is implemented with the Rust `reqwest` library—not by shelling out to the operating-system `curl` program—so arbitrary CLI flags are not accepted. Query strings already work as part of the URL. To add behavior later, add explicit slash-command parameters such as a method or a small set of allowed headers, then validate each option and keep the existing destination checks, timeout, redirect policy, body limits, mention/code-block escaping, and cooldowns. Do not pass user text to a shell. Avoid allowing credentials or unrestricted headers, since those can leak secrets or enable abuse against public endpoints.
+
+## Network requirements
+
+The container needs outbound connectivity for:
+
+- Discord’s HTTPS API and Gateway WebSocket over TLS (normally outbound port 443)
+- DNS resolution through the container’s configured resolver
+- HTTP/HTTPS to public hosts for `/curl`
+- TCP port 43 for `/whois` (may be blocked by hosting providers or registry policy)
+- Optional ICMP for `/ping`; otherwise the command may use TCP to the selected target port
+
+The bot does **not** listen on an inbound HTTP port. Hosting firewalls and sandbox capabilities may restrict outbound connections or ICMP.
 
 ## Deploy on Wispbyte
 
-Wispbyte's [Startup Settings](https://wispbyte.com/kb/startup-settings) document panel-managed startup commands, Docker images, and environment variables. I could not find a Wispbyte-documented Rust build image or Rust-specific build pipeline, so the most portable approach is to compile a Linux executable first and upload it. A source clone alone does not compile the Rust project.
+Wispbyte’s public [Startup Settings](https://wispbyte.com/kb/startup-settings) and [GitHub Integration](https://wispbyte.com/kb/github-integration) documentation describes panel-managed images, startup commands, environment variables, and repository sync. I could not verify a Wispbyte-documented Rust build image/toolchain. Therefore, the reliable route is to build a compatible Linux binary first and upload it. If the panel offers a Rust-capable image, you can instead clone this branch and build there, but confirm that Rust 1.85+ and Cargo are available; do not assume this.
 
-### 1. Build a Linux executable
+### 1. Build the executable
 
-On a Linux **x86_64** machine with Rust installed, in the repository root:
+On a compatible Linux **x86_64** machine, from the repository root:
 
 ```sh
 cargo build --release --locked
@@ -49,27 +76,29 @@ file target/release/lime-discord-bot
 ldd target/release/lime-discord-bot
 ```
 
-Use an executable compatible with the Wispbyte container's CPU architecture and C library (this build normally targets x86_64 Linux with glibc). Do not upload a macOS or Windows build. If you are building from another OS, build inside a compatible Linux environment or cross-compile for the exact target. Rust and Cargo are not needed in the runtime container when using the prebuilt executable.
+The default target is an x86_64 Linux executable linked to glibc. Choose a Wispbyte container with a matching CPU architecture and compatible runtime libraries. Do not upload a Windows or macOS binary. Rust and Cargo are unnecessary in the Wispbyte container when using the prebuilt binary.
 
-### 2. Create and configure the Wispbyte server
+### 2. Set up the Wispbyte server
 
 1. Create a bot/app server in the [Wispbyte client panel](https://wispbyte.com/client).
-2. Choose a Linux Docker image/container that can run a custom shell startup command and is compatible with the executable you built. The runtime image must support outbound connections to Discord. If the panel does not offer a compatible runtime or rejects uploaded executables, check with Wispbyte support about a Rust-compatible/custom image before proceeding.
-3. In **Files**, upload `target/release/lime-discord-bot` to the server's working directory (usually the server root). You can also use Wispbyte's [GitHub Integration](https://wispbyte.com/kb/github-integration) to clone/pull the source, but the source still needs a Rust toolchain/build step; uploading the prebuilt executable avoids that assumption.
-4. In **Startup**, add the environment variable `DISCORD_TOKEN` and set its value to your bot token. Do not put the token in a source file, repository, or startup command. Add `DISCORD_GUILD_ID` only if you want guild-scoped registration for a test server; omit it for global commands.
+2. Select a Linux container that allows a custom shell startup command, executable uploads, outbound Discord connectivity, and the binary’s CPU/ABI. If no available image meets these conditions, ask Wispbyte support which image can run a prebuilt Linux executable.
+3. In **Files**, upload `target/release/lime-discord-bot` into the server’s working directory (usually the root). Wispbyte’s GitHub integration can clone/pull source, but that alone does not compile Rust.
+4. In **Startup**, set `DISCORD_TOKEN` to the bot token. Never put the token in the repository or startup command. Add `DISCORD_GUILD_ID` only for guild-scoped development registration; omit it for global registration.
 5. Set the **Startup Command** to:
 
    ```sh
    chmod +x ./lime-discord-bot && ./lime-discord-bot
    ```
 
-6. Save the settings and start the server from **Console**. Check the console/logs for startup errors, then confirm the bot is online and test `/ping` or `/curl` in Discord.
+6. Save settings and start the server from **Console**. Read the logs if it exits; confirm the bot is online and test `/uptime`, `/dns`, and `/ping`.
 
-Wispbyte's panel controls for Docker images can vary by server type. The executable approach is conditional on the chosen container allowing the shell command and having a compatible Linux ABI; verify this with the panel's console on first launch. The bot does not need an inbound listening port.
+The executable approach depends on the actual Wispbyte image and network policy, which cannot be tested from this repository environment. Check Wispbyte’s current per-server bot and resource limits in the panel.
 
-## Commands and safety
+## Add another slash-command group
 
-- **`/curl url:<URL>`** — makes a bounded HTTP GET. Only HTTP and HTTPS URLs are allowed; non-public DNS/IP destinations are rejected, redirects are disabled, request time is limited, and the response body/output are capped.
-- **`/ping host:<host> [port:<port>]`** — tries Linux ICMP ping when available. If the executable is unavailable (or on non-Linux), it checks TCP connectivity to the requested port (default `443`) instead. A successful ICMP check does not test the supplied TCP port. Use only for destinations you are authorized to test.
+1. Add a module such as `src/cogs/example.rs` and define slash commands there using `#[poise::command(slash_command)]`.
+2. Export `pub fn commands() -> Vec<poise::Command<crate::Data, crate::Error>>` from the module.
+3. Declare the module in `src/cogs/mod.rs` and append its command list in `cogs::commands()`.
+4. Put genuinely shared validation/formatting helpers in `src/utils/` and add tests for input boundaries, output limits, and network error cases.
 
-Both network commands use per-user cooldowns. Slash-command interactions are acknowledged before network work so slow DNS or connectivity checks do not miss Discord's initial-response deadline.
+Keep command registration slash-only; do not add prefix/message handlers or the Message Content intent.
