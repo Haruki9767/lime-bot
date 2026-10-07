@@ -5,11 +5,14 @@ use std::{io::ErrorKind, process::Stdio};
 use poise::serenity_prelude::UserId;
 #[cfg(target_os = "linux")]
 use tokio::process::Command;
-use tokio::{net::TcpStream, time::timeout};
+use tokio::{
+    net::{TcpStream, lookup_host},
+    time::timeout,
+};
 
 use crate::{CooldownCheck, Data, Error};
 use lime_discord_bot::utils::{
-    Host, SafeRequestError, format_code_block, resolve_safe_http_url, validate_host,
+    Host, SafeRequestError, format_code_block, is_public_ip, resolve_safe_http_url, validate_host,
 };
 
 const CURL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -17,6 +20,7 @@ const CURL_BODY_LIMIT: usize = 32 * 1024;
 const CURL_COOLDOWN: Duration = Duration::from_secs(10);
 const PING_COOLDOWN: Duration = Duration::from_secs(5);
 const PING_PROCESS_TIMEOUT: Duration = Duration::from_secs(5);
+const PING_DNS_TIMEOUT: Duration = Duration::from_secs(5);
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 const PROBE_NOTICE: &str = "Note: this command probes one specified host and port per invocation; use it only for destinations you are authorized to test.";
 
@@ -30,6 +34,10 @@ async fn curl(ctx: poise::Context<'_, Data, Error>, url: String) -> Result<(), E
         ctx.say(reply).await?;
         return Ok(());
     }
+
+    // DNS and HTTP requests can each take longer than Discord's 3-second
+    // initial-response deadline, so acknowledge before beginning network I/O.
+    ctx.defer().await?;
 
     let started = Instant::now();
     let safe_url = match resolve_safe_http_url(&url).await {
@@ -46,7 +54,7 @@ async fn curl(ctx: poise::Context<'_, Data, Error>, url: String) -> Result<(), E
         Err(error) => {
             ctx.say(format_code_block(
                 "Curl error",
-                &request_error_message(error),
+                request_error_message(error),
             ))
             .await?;
             return Ok(());
@@ -127,6 +135,24 @@ async fn ping(
         return Ok(());
     }
 
+    // ICMP may wait up to 5 seconds; the TCP fallback may wait up to 4.
+    ctx.defer().await?;
+
+    let host = match resolve_public_host(&host, port).await {
+        Ok(host) => host,
+        Err(error) => {
+            let message = match error {
+                ProbeHostError::ResolutionFailed => "The host could not be resolved safely.",
+                ProbeHostError::NoAddresses => "The host did not resolve to an address.",
+                ProbeHostError::NonPublicAddress => {
+                    "Only public Internet destinations are allowed."
+                }
+            };
+            ctx.say(format!("{message}\n{PROBE_NOTICE}")).await?;
+            return Ok(());
+        }
+    };
+
     #[cfg(target_os = "linux")]
     let result = match run_icmp(&host).await {
         IcmpCheck::Succeeded => {
@@ -167,6 +193,45 @@ fn request_error_message(error: SafeRequestError) -> &'static str {
         SafeRequestError::Network => "the request failed due to a network error",
         SafeRequestError::ClientBuild => "a safe HTTP client could not be created",
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeHostError {
+    ResolutionFailed,
+    NoAddresses,
+    NonPublicAddress,
+}
+
+/// Resolves once, rejects mixed/private answers, and returns a pinned public IP.
+async fn resolve_public_host(host: &Host, port: u16) -> Result<Host, ProbeHostError> {
+    match host {
+        Host::Ip(address) => {
+            if is_public_ip(*address) {
+                Ok(Host::Ip(*address))
+            } else {
+                Err(ProbeHostError::NonPublicAddress)
+            }
+        }
+        Host::Hostname(hostname) => {
+            let addresses = timeout(PING_DNS_TIMEOUT, lookup_host((hostname.as_str(), port)))
+                .await
+                .map_err(|_| ProbeHostError::ResolutionFailed)?
+                .map_err(|_| ProbeHostError::ResolutionFailed)?
+                .collect::<Vec<_>>();
+            pin_public_addresses(addresses)
+        }
+    }
+}
+
+fn pin_public_addresses(addresses: Vec<std::net::SocketAddr>) -> Result<Host, ProbeHostError> {
+    if addresses.is_empty() {
+        return Err(ProbeHostError::NoAddresses);
+    }
+    if addresses.iter().any(|address| !is_public_ip(address.ip())) {
+        return Err(ProbeHostError::NonPublicAddress);
+    }
+
+    Ok(Host::Ip(addresses[0].ip()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -307,6 +372,51 @@ mod tests {
             assert!(!message.contains("https://"));
             assert!(!message.contains("127.0.0.1"));
         }
+    }
+
+    #[tokio::test]
+    async fn ping_rejects_private_loopback_and_mapped_private_ip_literals() {
+        for address in ["10.0.0.1", "127.0.0.1", "::1", "::ffff:192.168.1.1"] {
+            let host = Host::Ip(address.parse().unwrap());
+            assert_eq!(
+                resolve_public_host(&host, 443).await,
+                Err(ProbeHostError::NonPublicAddress),
+                "accepted {address}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ping_accepts_a_public_ip_literal_and_returns_it_pinned() {
+        let address = "2606:4700:4700::1111".parse().unwrap();
+        assert_eq!(
+            resolve_public_host(&Host::Ip(address), 443).await,
+            Ok(Host::Ip(address))
+        );
+    }
+
+    #[test]
+    fn ping_rejects_a_mixed_public_and_private_dns_answer_set() {
+        let addresses = vec![
+            "8.8.8.8:443".parse().unwrap(),
+            "10.0.0.1:443".parse().unwrap(),
+        ];
+        assert_eq!(
+            pin_public_addresses(addresses),
+            Err(ProbeHostError::NonPublicAddress)
+        );
+    }
+
+    #[test]
+    fn ping_pins_the_first_ip_after_all_dns_answers_pass_validation() {
+        let addresses = vec![
+            "8.8.8.8:443".parse().unwrap(),
+            "1.1.1.1:443".parse().unwrap(),
+        ];
+        assert_eq!(
+            pin_public_addresses(addresses),
+            Ok(Host::Ip("8.8.8.8".parse().unwrap()))
+        );
     }
 
     #[test]
