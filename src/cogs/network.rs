@@ -31,6 +31,10 @@ async fn curl(ctx: poise::Context<'_, Data, Error>, url: String) -> Result<(), E
         return Ok(());
     }
 
+    // DNS and HTTP requests can each take longer than Discord's 3-second
+    // initial-response deadline, so acknowledge before beginning network I/O.
+    ctx.defer().await?;
+
     let started = Instant::now();
     let safe_url = match resolve_safe_http_url(&url).await {
         Ok(url) => url,
@@ -46,7 +50,7 @@ async fn curl(ctx: poise::Context<'_, Data, Error>, url: String) -> Result<(), E
         Err(error) => {
             ctx.say(format_code_block(
                 "Curl error",
-                &request_error_message(error),
+                request_error_message(error),
             ))
             .await?;
             return Ok(());
@@ -126,6 +130,9 @@ async fn ping(
             .await?;
         return Ok(());
     }
+
+    // ICMP may wait up to 5 seconds; the TCP fallback may wait up to 4.
+    ctx.defer().await?;
 
     #[cfg(target_os = "linux")]
     let result = match run_icmp(&host).await {
