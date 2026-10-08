@@ -4,9 +4,10 @@ use std::{
     time::Duration,
 };
 
+use hickory_resolver::TokioAsyncResolver;
 use ipnet::{Ipv4Net, Ipv6Net};
-use reqwest::{Client, Url, redirect::Policy};
-use tokio::{net::lookup_host, time::timeout};
+use reqwest::{Client, Method, Url, redirect::Policy};
+use tokio::time::timeout;
 
 /// Maximum time spent resolving a hostname before rejecting the URL.
 pub const DNS_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -59,7 +60,8 @@ impl std::error::Error for SafeRequestError {}
 
 /// A URL whose complete DNS answer set has been checked and pinned for requests.
 ///
-/// Requests can only be made to the stored URL through [`SafeHttpUrl::get`].
+/// Requests can only be made to the stored URL through [`SafeHttpUrl::get`] or
+/// [`SafeHttpUrl::head`].
 /// The internal client pins validated resolutions, disables redirects and proxies,
 /// and applies the supplied timeout.
 #[derive(Debug, Clone)]
@@ -86,14 +88,39 @@ impl SafeHttpUrl {
         &self,
         request_timeout: Duration,
     ) -> Result<reqwest::Response, SafeRequestError> {
+        self.send(Method::GET, request_timeout).await
+    }
+
+    /// Issues a HEAD only to this validated URL using its pinned DNS answers.
+    pub async fn head(
+        &self,
+        request_timeout: Duration,
+    ) -> Result<reqwest::Response, SafeRequestError> {
+        self.send(Method::HEAD, request_timeout).await
+    }
+
+    async fn send(
+        &self,
+        method: Method,
+        request_timeout: Duration,
+    ) -> Result<reqwest::Response, SafeRequestError> {
         let client = self.build_client(request_timeout)?;
-        self.get_request(&client).send().await.map_err(|error| {
-            if error.is_timeout() {
-                SafeRequestError::Timeout
-            } else {
-                SafeRequestError::Network
-            }
-        })
+        self.build_request(&client, method)
+            .send()
+            .await
+            .map_err(|error| {
+                let is_timeout = error.is_timeout();
+                let host = self.url.host_str().unwrap_or("<unknown>");
+                eprintln!(
+                    "[lime][curl] HTTP request failed host={host}: {}",
+                    error.without_url()
+                );
+                if is_timeout {
+                    SafeRequestError::Timeout
+                } else {
+                    SafeRequestError::Network
+                }
+            })
     }
 
     /// Builds a client that is never exposed to callers and is scoped to this URL.
@@ -107,31 +134,54 @@ impl SafeHttpUrl {
             builder = builder.resolve_to_addrs(hostname, &self.addresses);
         }
 
-        builder.build().map_err(|_| SafeRequestError::ClientBuild)
+        builder.build().map_err(|error| {
+            eprintln!(
+                "[lime][curl] safe HTTP client creation failed: {}",
+                error.without_url()
+            );
+            SafeRequestError::ClientBuild
+        })
     }
 
-    fn get_request(&self, client: &Client) -> reqwest::RequestBuilder {
-        client.get(self.url.clone())
+    fn build_request(&self, client: &Client, method: Method) -> reqwest::RequestBuilder {
+        client.request(method, self.url.clone())
     }
 }
 
 /// Parses, resolves, and validates an HTTP(S) URL before any connection is made.
 ///
 /// All DNS answers must be public; a mixed public/private answer set is rejected.
-/// Use [`SafeHttpUrl::get`] so validated hostname resolutions cannot be looked up
-/// again at connect time, and no alternate destination or redirect is requested.
-pub async fn resolve_safe_http_url(input: &str) -> Result<SafeHttpUrl, SafeUrlError> {
+/// Use [`SafeHttpUrl::get`] or [`SafeHttpUrl::head`] so validated hostname resolutions
+/// cannot be looked up again at connect time, and no alternate destination or redirect
+/// is requested.
+pub async fn resolve_safe_http_url(
+    input: &str,
+    resolver: &TokioAsyncResolver,
+) -> Result<SafeHttpUrl, SafeUrlError> {
     let url = parse_http_url(input)?;
     let port = url
         .port_or_known_default()
         .ok_or(SafeUrlError::InvalidUrl)?;
 
     let addresses = if let Some(hostname) = url.domain() {
-        let resolved = timeout(DNS_RESOLUTION_TIMEOUT, lookup_host((hostname, port)))
-            .await
-            .map_err(|_| SafeUrlError::ResolutionFailed)?
-            .map_err(|_| SafeUrlError::ResolutionFailed)?;
-        let mut addresses: Vec<_> = resolved.collect();
+        let resolved = match timeout(DNS_RESOLUTION_TIMEOUT, resolver.lookup_ip(hostname)).await {
+            Err(_) => {
+                eprintln!(
+                    "[lime][curl] DNS lookup timed out host={hostname} limit={}s",
+                    DNS_RESOLUTION_TIMEOUT.as_secs()
+                );
+                return Err(SafeUrlError::ResolutionFailed);
+            }
+            Ok(Err(error)) => {
+                eprintln!("[lime][curl] DNS lookup failed host={hostname}: {error}");
+                return Err(SafeUrlError::ResolutionFailed);
+            }
+            Ok(Ok(resolved)) => resolved,
+        };
+        let mut addresses: Vec<_> = resolved
+            .iter()
+            .map(|ip| SocketAddr::new(ip, port))
+            .collect();
         addresses.sort_unstable();
         addresses.dedup();
         addresses
@@ -145,9 +195,15 @@ pub async fn resolve_safe_http_url(input: &str) -> Result<SafeHttpUrl, SafeUrlEr
     };
 
     if addresses.is_empty() {
+        if let Some(hostname) = url.domain() {
+            eprintln!("[lime][curl] DNS returned no A/AAAA addresses host={hostname}");
+        }
         return Err(SafeUrlError::NoAddresses);
     }
     if addresses.iter().any(|address| !is_public_ip(address.ip())) {
+        if let Some(hostname) = url.domain() {
+            eprintln!("[lime][curl] blocked non-public DNS answer host={hostname}");
+        }
         return Err(SafeUrlError::NonPublicAddress);
     }
 
@@ -326,13 +382,14 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_non_public_ip_literals_before_connecting() {
+        let resolver = TokioAsyncResolver::tokio_from_system_conf().unwrap();
         for input in [
             "http://127.0.0.1/",
             "https://[::1]/",
             "http://[::ffff:10.0.0.1]/",
         ] {
             assert_eq!(
-                resolve_safe_http_url(input).await.unwrap_err(),
+                resolve_safe_http_url(input, &resolver).await.unwrap_err(),
                 SafeUrlError::NonPublicAddress
             );
         }
@@ -340,7 +397,8 @@ mod tests {
 
     #[tokio::test]
     async fn public_ip_literal_returns_checked_url_and_address() {
-        let safe = resolve_safe_http_url("https://8.8.8.8/dns-query")
+        let resolver = TokioAsyncResolver::tokio_from_system_conf().unwrap();
+        let safe = resolve_safe_http_url("https://8.8.8.8/dns-query", &resolver)
             .await
             .unwrap();
         assert_eq!(safe.url().host_str(), Some("8.8.8.8"));
@@ -355,9 +413,13 @@ mod tests {
             addresses: vec!["8.8.8.8:443".parse().unwrap()],
         };
         let client = safe.build_client(Duration::from_secs(10)).unwrap();
-        let request = safe.get_request(&client).build().unwrap();
+        let request = safe.build_request(&client, Method::GET).build().unwrap();
         assert_eq!(request.method(), reqwest::Method::GET);
         assert_eq!(request.url(), safe.url());
+
+        let head_request = safe.build_request(&client, Method::HEAD).build().unwrap();
+        assert_eq!(head_request.method(), reqwest::Method::HEAD);
+        assert_eq!(head_request.url(), safe.url());
     }
 
     #[test]

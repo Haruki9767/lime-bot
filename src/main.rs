@@ -7,7 +7,8 @@ use std::{
 
 use anyhow::{Context as _, bail};
 use hickory_resolver::TokioAsyncResolver;
-use poise::serenity_prelude::{GatewayIntents, GuildId};
+use lime_discord_bot::utils::format_uptime;
+use poise::serenity_prelude::{ActivityData, GatewayIntents, GuildId, OnlineStatus};
 
 mod cogs;
 
@@ -116,8 +117,21 @@ async fn main() -> anyhow::Result<()> {
                     poise::builtins::register_globally(ctx, &framework.options().commands).await?;
                 }
 
+                let start_time = Instant::now();
+                let presence_context = (*ctx).clone();
+                tokio::spawn(async move {
+                    loop {
+                        let activity = ActivityData::playing(format!(
+                            "Uptime: {}",
+                            format_uptime(start_time.elapsed())
+                        ));
+                        presence_context.set_presence(Some(activity), OnlineStatus::Idle);
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                    }
+                });
+
                 Ok(Data {
-                    start_time: Instant::now(),
+                    start_time,
                     resolver,
                     cooldowns: Mutex::new(HashMap::new()),
                 })
@@ -164,6 +178,8 @@ mod tests {
                 "whois".to_owned(),
                 "dns".to_owned(),
                 "uptime".to_owned(),
+                "help".to_owned(),
+                "github".to_owned(),
             ]
         );
     }

@@ -34,21 +34,29 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo build --release --locked
 ```
 
+### Runtime diagnostics
+
+When a command encounters a DNS, HTTP, ICMP, TCP, or WHOIS failure, the bot writes a diagnostic line to **stderr** with a `[lime][command]` prefix. Check the terminal running `cargo run` or the hosting panel's live console/logs. Diagnostics include the failing stage and underlying resolver or I/O error where available; they do not include the bot token, full curl URL, URL path/query, or HTTP response body. Hostnames and public WHOIS target addresses may appear, so redact them before sharing logs publicly.
+
 The bot’s memory, network operations, request/response bodies, DNS result count, and Discord output are bounded for small containers. It uses `rustls`, not native TLS, and does not rely on system `curl`, `whois`, or `dig` binaries. The optional Linux `ping` executable is the only external command it attempts.
 
 ## Slash commands
 
-- **`/curl url:<URL>`** — performs a bounded HTTP **GET**. It accepts only HTTP/HTTPS, rejects credentials and non-public IPv4/IPv6 destinations (including mixed public/private DNS answers), pins the validated DNS results to prevent rebinding, disables redirects, limits request time and body size, and escapes/truncates the result safely for Discord.
+- **`/curl url:<URL> [include_headers:true] [head_only:true] [silent:true] [follow_redirects:true] [output_file:<name>]`** — performs a bounded HTTP **GET**, or a **HEAD** request when `head_only` is true. `include_headers:true` includes response headers and the body (like curl `-i`); `head_only:true` sends HEAD and includes response headers without a body (like curl `-I`). `silent:true` omits status/timing metadata but still returns the response and reports errors (like `-s` in a bot without a progress meter). `follow_redirects:true` follows up to five redirects (like `-L`), validating and DNS-pinning every destination; redirects are off by default. `output_file:<name>` attaches the response using a sanitized filename for download (like `-o`); Discord lets you choose where to save it. Inline response data is capped at 32 KiB; file attachments at 5 MiB. Oversized responses are truncated with a notice. Sensitive response-header values such as `Set-Cookie` are redacted.
 - **`/ping host:<host> [port:<port>]`** — accepts only public Internet destinations. It resolves hostnames once, rejects the full answer set if any address is non-public, and probes a checked IP. On Linux it attempts ICMP with a process timeout if the `ping` executable can be started; if the executable is missing or cannot be launched, it uses a bounded TCP connectivity check to the supplied port (default `443`). TCP fallback is labeled as TCP, not ICMP. Use only for destinations you are authorized to test; cooldowns are applied per user.
 - **`/whois domain:<domain>`** — validates a public domain, queries IANA then follows at most one validated registry referral over TCP port 43, and extracts registrar, creation date, expiry date, and nameservers best-effort. Missing fields are reported as `not provided`; registry output varies. A host or network that blocks outbound TCP/43 can prevent results.
 - **`/dns domain:<domain> [type:<type>]`** — queries A, AAAA, MX, TXT, NS, or CNAME records using the configured system resolver; type defaults to A. Query time, result count, and Discord output are bounded. No records and resolver failures receive clear responses.
 - **`/uptime`** — reports process uptime. The Poise command context does not expose the shard runner’s heartbeat measurement, so gateway latency is explicitly reported as unavailable rather than invented.
+- **`/help`** — explains every slash command and its main options.
+- **`/github`** — links to the bot source code on the `lime` branch.
 
 Network commands defer their Discord response before slow I/O, so DNS, TCP, or HTTP waits do not miss Discord’s initial interaction-response deadline ([Discord interaction response docs](https://discord.com/developers/docs/interactions/receiving-and-responding)).
 
-### How `/curl` can gain more options
+### `/curl` options and limitations
 
-Today `/curl` takes one URL and always performs a GET. It is implemented with the Rust `reqwest` library—not by shelling out to the operating-system `curl` program—so arbitrary CLI flags are not accepted. Query strings already work as part of the URL. To add behavior later, add explicit slash-command parameters such as a method or a small set of allowed headers, then validate each option and keep the existing destination checks, timeout, redirect policy, body limits, mention/code-block escaping, and cooldowns. Do not pass user text to a shell. Avoid allowing credentials or unrestricted headers, since those can leak secrets or enable abuse against public endpoints.
+`/curl` is implemented with Rust's `reqwest` library, not by shelling out to the operating-system `curl` program, so enter the named slash-command options rather than raw flags. Quiet mode suppresses status/timing details, not errors or the required Discord response. Redirects are manually followed only when requested and each target is revalidated; do not enable unrestricted automatic redirects or pass user text to a shell.
+
+Examples: use `/curl url:https://example.com include_headers:true` for headers plus body; `/curl url:https://example.com head_only:true` for headers only; `/curl url:https://example.com silent:true` to omit status/timing; `/curl url:https://example.com follow_redirects:true output_file:page.html` to safely follow redirects and receive a downloadable attachment named `page.html`.
 
 ## Network requirements
 

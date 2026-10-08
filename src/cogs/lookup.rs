@@ -1,10 +1,11 @@
 use std::{net::SocketAddr, time::Duration};
 
+use hickory_resolver::TokioAsyncResolver;
 use hickory_resolver::proto::rr::RecordType;
 use poise::serenity_prelude::UserId;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpStream, lookup_host},
+    net::TcpStream,
     time::timeout,
 };
 
@@ -126,7 +127,11 @@ async fn dns(
             ))
             .await?;
         }
-        Ok(Err(_)) => {
+        Ok(Err(error)) => {
+            eprintln!(
+                "[lime][dns] resolver failed domain={domain} type={}: {error}",
+                record_type.label()
+            );
             ctx.say(format_code_block(
                 &format!("DNS {} {}", record_type.label(), domain),
                 "The resolver returned an error. Check DNS connectivity and try again.",
@@ -134,6 +139,11 @@ async fn dns(
             .await?;
         }
         Err(_) => {
+            eprintln!(
+                "[lime][dns] query timed out domain={domain} type={} limit={}s",
+                record_type.label(),
+                DNS_TIMEOUT.as_secs()
+            );
             ctx.say(format_code_block(
                 &format!("DNS {} {}", record_type.label(), domain),
                 "The DNS query timed out.",
@@ -171,7 +181,7 @@ async fn whois(ctx: poise::Context<'_, Data, Error>, domain: String) -> Result<(
     }
 
     ctx.defer().await?;
-    match query_whois(&domain).await {
+    match query_whois(&domain, &ctx.data().resolver).await {
         Ok(response) => {
             let fields = parse_whois_fields(&response);
             let content = format_whois_fields(&fields);
@@ -179,6 +189,7 @@ async fn whois(ctx: poise::Context<'_, Data, Error>, domain: String) -> Result<(
                 .await?;
         }
         Err(error) => {
+            eprintln!("[lime][whois] lookup failed domain={domain}: {error:?}");
             ctx.say(format_code_block(
                 &format!("WHOIS {domain}"),
                 whois_error_message(error),
@@ -216,56 +227,97 @@ enum WhoisError {
     ResponseTooLarge,
 }
 
-async fn query_whois(domain: &str) -> Result<String, WhoisError> {
-    let iana_response = whois_query("whois.iana.org", domain).await?;
+async fn query_whois(domain: &str, resolver: &TokioAsyncResolver) -> Result<String, WhoisError> {
+    let iana_response = whois_query("whois.iana.org", domain, resolver).await?;
     let Some(referral) = find_referral(&iana_response) else {
         return Ok(iana_response);
     };
     if referral == "whois.iana.org" {
         return Ok(iana_response);
     }
-    whois_query(&referral, domain).await
+    whois_query(&referral, domain, resolver).await
 }
 
-async fn whois_query(server: &str, domain: &str) -> Result<String, WhoisError> {
+async fn whois_query(
+    server: &str,
+    domain: &str,
+    resolver: &TokioAsyncResolver,
+) -> Result<String, WhoisError> {
     let server = validate_domain(server).map_err(|_| WhoisError::InvalidServer)?;
-    let resolved = timeout(WHOIS_DNS_TIMEOUT, lookup_host((server.as_str(), 43)))
-        .await
-        .map_err(|_| WhoisError::ResolutionFailed)?
-        .map_err(|_| WhoisError::ResolutionFailed)?;
-    let addresses: Vec<SocketAddr> = resolved.collect();
+    let resolved = match timeout(WHOIS_DNS_TIMEOUT, resolver.lookup_ip(server.as_str())).await {
+        Err(_) => {
+            eprintln!(
+                "[lime][whois] registry DNS lookup timed out registry={server} domain={domain} limit={}s",
+                WHOIS_DNS_TIMEOUT.as_secs()
+            );
+            return Err(WhoisError::ResolutionFailed);
+        }
+        Ok(Err(error)) => {
+            eprintln!(
+                "[lime][whois] registry DNS lookup failed registry={server} domain={domain}: {error}"
+            );
+            return Err(WhoisError::ResolutionFailed);
+        }
+        Ok(Ok(resolved)) => resolved,
+    };
+    let addresses: Vec<SocketAddr> = resolved.iter().map(|ip| SocketAddr::new(ip, 43)).collect();
     if addresses.is_empty() {
+        eprintln!("[lime][whois] registry has no IP addresses registry={server}");
         return Err(WhoisError::NoAddresses);
     }
     if addresses.iter().any(|address| !is_public_ip(address.ip())) {
+        eprintln!("[lime][whois] blocked non-public registry address registry={server}");
         return Err(WhoisError::NonPublicAddress);
     }
     let address = addresses[0];
     let request = format!("{domain}\r\n");
+    let registry_for_log = server.clone();
+    let domain_for_log = domain.to_owned();
 
     let operation = async move {
-        let mut stream = TcpStream::connect(address)
-            .await
-            .map_err(|_| WhoisError::Io)?;
-        stream
-            .write_all(request.as_bytes())
-            .await
-            .map_err(|_| WhoisError::Io)?;
+        let mut stream = match TcpStream::connect(address).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                eprintln!(
+                    "[lime][whois] registry connect failed registry={registry_for_log} domain={domain_for_log} address={address}: {error}"
+                );
+                return Err(WhoisError::Io);
+            }
+        };
+        if let Err(error) = stream.write_all(request.as_bytes()).await {
+            eprintln!(
+                "[lime][whois] registry request write failed registry={registry_for_log} domain={domain_for_log}: {error}"
+            );
+            return Err(WhoisError::Io);
+        }
         let mut bytes = Vec::with_capacity(WHOIS_RESPONSE_LIMIT.min(4096));
         let mut reader = stream.take((WHOIS_RESPONSE_LIMIT + 1) as u64);
-        reader
-            .read_to_end(&mut bytes)
-            .await
-            .map_err(|_| WhoisError::Io)?;
+        if let Err(error) = reader.read_to_end(&mut bytes).await {
+            eprintln!(
+                "[lime][whois] registry response read failed registry={registry_for_log} domain={domain_for_log}: {error}"
+            );
+            return Err(WhoisError::Io);
+        }
         if bytes.len() > WHOIS_RESPONSE_LIMIT {
+            eprintln!(
+                "[lime][whois] response too large registry={registry_for_log} domain={domain_for_log} bytes={} limit={WHOIS_RESPONSE_LIMIT}",
+                bytes.len()
+            );
             return Err(WhoisError::ResponseTooLarge);
         }
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     };
 
-    timeout(WHOIS_IO_TIMEOUT, operation)
-        .await
-        .map_err(|_| WhoisError::Timeout)?
+    match timeout(WHOIS_IO_TIMEOUT, operation).await {
+        Ok(result) => result,
+        Err(_) => {
+            eprintln!(
+                "[lime][whois] registry query timed out registry={server} domain={domain} limit={}s",
+                WHOIS_IO_TIMEOUT.as_secs()
+            );
+            Err(WhoisError::Timeout)
+        }
+    }
 }
 
 fn find_referral(response: &str) -> Option<String> {
