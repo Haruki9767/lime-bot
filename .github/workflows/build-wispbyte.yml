@@ -1,0 +1,31 @@
+name: Build Wispbyte binary
+
+on:
+  push:
+    branches: [lime]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked --target x86_64-unknown-linux-gnu
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lime-bot-linux-x86_64
+          path: target/x86_64-unknown-linux-gnu/release/lime-discord-bot
+          if-no-files-found: error
