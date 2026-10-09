@@ -52,8 +52,7 @@ pub fn format_uptime(duration: Duration) -> String {
     let days = total / 86_400;
     let hours = (total % 86_400) / 3_600;
     let minutes = (total % 3_600) / 60;
-    let seconds = total % 60;
-    format!("{days} days, {hours} hours, {minutes} minutes, {seconds} seconds")
+    format!("{days} days, {hours} hours, {minutes} minutes")
 }
 
 /// Produces one escaped code-block message whose complete length is at most 1,800 UTF-16 units.
@@ -94,33 +93,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn formats_uptime_at_unit_boundaries() {
-        assert_eq!(
-            format_uptime(Duration::ZERO),
-            "0 days, 0 hours, 0 minutes, 0 seconds"
-        );
-        assert_eq!(
-            format_uptime(Duration::from_secs(59)),
-            "0 days, 0 hours, 0 minutes, 59 seconds"
-        );
-        assert_eq!(
-            format_uptime(Duration::from_secs(60)),
-            "0 days, 0 hours, 1 minutes, 0 seconds"
-        );
-        assert_eq!(
-            format_uptime(Duration::from_secs(3_600)),
-            "0 days, 1 hours, 0 minutes, 0 seconds"
-        );
-        assert_eq!(
-            format_uptime(Duration::from_secs(86_400)),
-            "1 days, 0 hours, 0 minutes, 0 seconds"
-        );
-        assert_eq!(
-            format_uptime(Duration::from_secs(90_061)),
-            "1 days, 1 hours, 1 minutes, 1 seconds"
-        );
-    }
-
+fn formats_uptime_at_unit_boundaries() {
+    assert_eq!(format_uptime(Duration::ZERO), "0 days, 0 hours, 0 minutes");
+    assert_eq!(format_uptime(Duration::from_secs(59)), "0 days, 0 hours, 0 minutes");
+    assert_eq!(format_uptime(Duration::from_secs(60)), "0 days, 0 hours, 1 minutes");
+    assert_eq!(format_uptime(Duration::from_secs(3_600)), "0 days, 1 hours, 0 minutes");
+    assert_eq!(format_uptime(Duration::from_secs(86_400)), "1 days, 0 hours, 0 minutes");
+    assert_eq!(format_uptime(Duration::from_secs(90_061)), "1 days, 1 hours, 1 minutes");
+}
     #[test]
     fn neutralizes_controls_backtick_fences_and_mass_mentions() {
         let escaped = escape_discord_text("a\0b\x1bc```\nnext\tline @everyone @here");
