@@ -2,19 +2,13 @@
 
 Lime is a modular Rust 2024 Discord bot using Tokio, Serenity 0.12, and Poise 0.6. It supports **slash commands only**—there are no text-prefix handlers and no Message Content intent requirement.
 
+## Invite
+- https://discord.com/oauth2/authorize?client_id=1557367299571318875
+
 ## Requirements and configuration
 
 - Rust **1.85 or newer** (edition 2024)
 - A Discord application with a bot user and token
-- For Wispbyte, a Linux container compatible with the generated executable and the outbound network requirements below
-
-### Discord application setup
-
-1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications) and add a bot user.
-2. Invite it using the `bot` and `applications.commands` OAuth scopes. Grant the bot permission to send messages where users will run commands.
-3. Do not enable privileged Gateway intents; this bot uses application commands only.
-4. For local work, copy `.env.example` to `.env` and set `DISCORD_TOKEN`. Never commit a real token or put it in source code.
-5. Optionally set `DISCORD_GUILD_ID` to a development server’s numeric ID for fast guild-scoped registration. Omit it for global deployment; global command changes may take time to propagate.
 
 ## Run and verify locally
 
@@ -69,38 +63,6 @@ The container needs outbound connectivity for:
 - Optional ICMP for `/ping`; otherwise the command may use TCP to the selected target port
 
 The bot does **not** listen on an inbound HTTP port. Hosting firewalls and sandbox capabilities may restrict outbound connections or ICMP.
-
-## Deploy on Wispbyte
-
-Wispbyte’s public [Startup Settings](https://wispbyte.com/kb/startup-settings) and [GitHub Integration](https://wispbyte.com/kb/github-integration) documentation describes panel-managed images, startup commands, environment variables, and repository sync. I could not verify a Wispbyte-documented Rust build image/toolchain. Therefore, the reliable route is to build a compatible Linux binary first and upload it. If the panel offers a Rust-capable image, you can instead clone this branch and build there, but confirm that Rust 1.85+ and Cargo are available; do not assume this.
-
-### 1. Build the executable
-
-On a compatible Linux **x86_64** machine, from the repository root:
-
-```sh
-cargo build --release --locked
-file target/release/lime-discord-bot
-ldd target/release/lime-discord-bot
-```
-
-The default target is an x86_64 Linux executable linked to glibc. Choose a Wispbyte container with a matching CPU architecture and compatible runtime libraries. Do not upload a Windows or macOS binary. Rust and Cargo are unnecessary in the Wispbyte container when using the prebuilt binary.
-
-### 2. Set up the Wispbyte server
-
-1. Create a bot/app server in the [Wispbyte client panel](https://wispbyte.com/client).
-2. Select a Linux container that allows a custom shell startup command, executable uploads, outbound Discord connectivity, and the binary’s CPU/ABI. If no available image meets these conditions, ask Wispbyte support which image can run a prebuilt Linux executable.
-3. In **Files**, upload `target/release/lime-discord-bot` into the server’s working directory (usually the root). Wispbyte’s GitHub integration can clone/pull source, but that alone does not compile Rust.
-4. In **Startup**, set `DISCORD_TOKEN` to the bot token. Never put the token in the repository or startup command. Add `DISCORD_GUILD_ID` only for guild-scoped development registration; omit it for global registration.
-5. Set the **Startup Command** to:
-
-   ```sh
-   chmod +x ./lime-discord-bot && ./lime-discord-bot
-   ```
-
-6. Save settings and start the server from **Console**. Read the logs if it exits; confirm the bot is online and test `/uptime`, `/dns`, and `/ping`.
-
-The executable approach depends on the actual Wispbyte image and network policy, which cannot be tested from this repository environment. Check Wispbyte’s current per-server bot and resource limits in the panel.
 
 ## Add another slash-command group
 
