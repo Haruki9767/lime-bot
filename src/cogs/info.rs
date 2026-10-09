@@ -8,7 +8,7 @@ pub fn commands() -> Vec<poise::Command<Data, Error>> {
     vec![uptime(), help(), github()]
 }
 
-const HELP_TEXT: &str = const HELP_TEXT: &str = "\
+const HELP_TEXT: &str = "\
 **Lime Bot Commands**
 
 **`/curl`** `url:<URL>` `[include_headers]` `[head_only]` `[silent]` `[follow_redirects]` `[output_file:<name>]`

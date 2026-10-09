@@ -5,6 +5,11 @@ Lime is a modular Rust 2024 Discord bot using Tokio, Serenity 0.12, and Poise 0.
 ## Invite
 - [Here](https://discord.com/oauth2/authorize?client_id=1557367299571318875)
 
+## Policies
+
+- [Privacy Policy](PRIVACY.md)
+- [Terms of Service](TERMS.md)
+
 ## Requirements and configuration
 
 - Rust **1.85 or newer** (edition 2024)
@@ -37,7 +42,7 @@ The bot’s memory, network operations, request/response bodies, DNS result coun
 ## Slash commands
 
 - **`/curl url:<URL> [include_headers:true] [head_only:true] [silent:true] [follow_redirects:true] [output_file:<name>]`** — performs a bounded HTTP **GET**, or a **HEAD** request when `head_only` is true. `include_headers:true` includes response headers and the body (like curl `-i`); `head_only:true` sends HEAD and includes response headers without a body (like curl `-I`). `silent:true` omits status/timing metadata but still returns the response and reports errors (like `-s` in a bot without a progress meter). `follow_redirects:true` follows up to five redirects (like `-L`), validating and DNS-pinning every destination; redirects are off by default. `output_file:<name>` attaches the response using a sanitized filename for download (like `-o`); Discord lets you choose where to save it. Inline response data is capped at 32 KiB; file attachments at 5 MiB. Oversized responses are truncated with a notice. Sensitive response-header values such as `Set-Cookie` are redacted.
-- **`/ping host:<host> [port:<port>]`** — accepts only public Internet destinations. It resolves hostnames once, rejects the full answer set if any address is non-public, and probes a checked IP. On Linux it attempts ICMP with a process timeout if the `ping` executable can be started; if the executable is missing or cannot be launched, it uses a bounded TCP connectivity check to the supplied port (default `443`). TCP fallback is labeled as TCP, not ICMP. Use only for destinations you are authorized to test; cooldowns are applied per user.
+- **`/ping host:<host> [port:<port>]`** — accepts only public Internet destinations. It resolves hostnames once, rejects the full answer set if any address is non-public, and probes a checked IP. On Linux it attempts ICMP with a process timeout; when the `ping` executable is missing or permission-denied, it uses a bounded TCP connectivity check to the supplied port (default `443`). On non-Linux platforms it uses TCP. TCP fallback is labeled as TCP, not ICMP. Use only for destinations you are authorized to test; cooldowns are applied per user.
 - **`/whois domain:<domain>`** — validates a public domain, queries IANA then follows at most one validated registry referral over TCP port 43, and extracts registrar, creation date, expiry date, and nameservers best-effort. Missing fields are reported as `not provided`; registry output varies. A host or network that blocks outbound TCP/43 can prevent results.
 - **`/dns domain:<domain> [type:<type>]`** — queries A, AAAA, MX, TXT, NS, or CNAME records using the configured system resolver; type defaults to A. Query time, result count, and Discord output are bounded. No records and resolver failures receive clear responses.
 - **`/uptime`** — reports process uptime. The Poise command context does not expose the shard runner’s heartbeat measurement, so gateway latency is explicitly reported as unavailable rather than invented.
