@@ -8,7 +8,33 @@ pub fn commands() -> Vec<poise::Command<Data, Error>> {
     vec![uptime(), help(), github()]
 }
 
-const HELP_TEXT: &str = "**Lime Bot commands**\n\n`/curl url:<URL> [include_headers] [head_only] [silent] [follow_redirects] [output_file:<name>]` — safe HTTP(S) GET/HEAD. Redirects are off by default; `follow_redirects` follows up to 5 checked hops. Inline output is capped at 32 KiB; file attachments at 5 MiB.\n`/ping host:<public host> [port:<port>]` — tests reachability; ICMP where available, otherwise TCP. Port defaults to 443.\n`/dns domain:<domain> [type:<A|AAAA|MX|TXT|NS|CNAME>]` — looks up records; type defaults to A.\n`/whois domain:<domain>` — looks up registration details and nameservers.\n`/uptime` — shows how long the bot process has been running.\n`/github` — links to the bot source code.\n`/help` — shows this command guide.";
+const HELP_TEXT: &str = const HELP_TEXT: &str = "\
+**Lime Bot Commands**
+
+**`/curl`** `url:<URL>` `[include_headers]` `[head_only]` `[silent]` `[follow_redirects]` `[output_file:<name>]`
+> Safe HTTP(S) GET/HEAD requests.
+> • Redirects are **off** by default; `follow_redirects` follows up to 5 checked hops
+> • Inline output capped at **32 KiB**, file attachments at **5 MiB**
+
+**`/ping`** `host:<public host>` `[port:<port>]`
+> Tests reachability — ICMP where available, otherwise TCP.
+> • Port defaults to `443`
+
+**`/dns`** `domain:<domain>` `[type:<A|AAAA|MX|TXT|NS|CNAME>]`
+> Looks up DNS records.
+> • Type defaults to `A`
+
+**`/whois`** `domain:<domain>`
+> Looks up registration details and nameservers.
+
+**`/uptime`**
+> Shows how long the bot process has been running.
+
+**`/github`**
+> Links to the bot source code.
+
+**`/help`**
+> Shows this command guide.";
 
 /// Explain the bot's available slash commands.
 #[poise::command(slash_command)]
