@@ -3,7 +3,7 @@
 Lime is a modular Rust 2024 Discord bot using Tokio, Serenity 0.12, and Poise 0.6. It supports **slash commands only**—there are no text-prefix handlers and no Message Content intent requirement.
 
 ## Invite
-- https://discord.com/oauth2/authorize?client_id=1557367299571318875
+- [Here](https://discord.com/oauth2/authorize?client_id=1557367299571318875)
 
 ## Requirements and configuration
 
